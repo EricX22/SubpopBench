@@ -1,0 +1,89 @@
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/fixes.py:28: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version  # type: ignore
+Environment:
+	Python: 3.9.7
+	PyTorch: 2.8.0+cu128
+	Torchvision: 0.23.0+cu128
+	CUDA: 12.8
+	CUDNN: 91002
+	NumPy: 1.19.5
+	PIL: 11.3.0
+Args:
+	algorithm: JTT
+	checkpoint_freq: None
+	cmnist_attr_prob: 0.5
+	cmnist_flip_prob: 0.25
+	cmnist_label_prob: 0.5
+	cmnist_spur_prob: 0.2
+	data_dir: /scratch/jrg4wx/subpop_bench/data
+	dataset: Waterbirds
+	es_metric: min_group:accuracy
+	es_patience: 5
+	es_strategy: metric
+	hparams: None
+	hparams_seed: 7
+	image_arch: resnet_sup_in1k
+	output_dir: ./output/wb_all_methods_16hp_3seed_attrNo_20260117_151131_attrNo/Waterbirds_JTT_hparams7_seed0
+	output_folder_name: wb_all_methods_16hp_3seed_attrNo_20260117_151131_attrNo
+	pretrained: 
+	resume: 
+	seed: 0
+	skip_model_save: False
+	stage1_algo: ERM
+	stage1_folder: vanilla
+	steps: None
+	store_name: Waterbirds_JTT_hparams7_seed0
+	tb_log_all: False
+	text_arch: bert-base-uncased
+	train_attr: no
+	use_es: False
+HParams:
+	batch_size: 78
+	first_stage_step_frac: 0.6115310772794184
+	group_balanced: False
+	image_arch: resnet_sup_in1k
+	jtt_lambda: 1.166342700340747
+	last_layer_dropout: 0.0
+	lr: 0.0002501509143479878
+	nonlinear_classifier: False
+	optimizer: sgd
+	pretrained: True
+	resnet18: False
+	text_arch: bert-base-uncased
+	weight_decay: 1.4786743947756096e-06
+Dataset:
+	[train]	4795 (without attributes)
+	[val]	1199
+	[test]	5794
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet50_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet50_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+
+
+step          epoch         loss          te_avg_acc    te_worst_acc  va_avg_acc    va_worst_acc 
+0             0.0000        0.5996        0.7725        0.1324        0.7857        0.1203       
+300           4.8801        0.0977        0.8334        0.6620        0.8240        0.5940       
+600           9.7602        0.0163        0.8616        0.6963        0.8457        0.6466       
+900           14.6403       0.0024        0.8664        0.6963        0.8474        0.6391       
+1200          19.5203       0.0007        0.8752        0.6791        0.8540        0.6165       
+1500          24.4004       0.0004        0.8735        0.6760        0.8532        0.6165       
+1800          29.2805       0.0003        0.8757        0.6776        0.8557        0.6165       
+2100          34.1606       0.0002        0.8749        0.6791        0.8549        0.6241       
+2400          39.0407       0.0001        0.8754        0.6791        0.8540        0.6165       
+2700          43.9208       0.0001        0.8761        0.6807        0.8565        0.6241       
+3000          48.8008       0.0001        0.8761        0.6807        0.8557        0.6165       
+3300          53.6809       0.1106        0.8488        0.5888        0.8365        0.5564       
+3600          58.5610       0.0302        0.8816        0.5950        0.8749        0.5489       
+3900          63.4411       0.0069        0.8799        0.6620        0.8699        0.6165       
+4200          68.3212       0.0012        0.8783        0.6667        0.8666        0.6241       
+4500          73.2013       0.0005        0.8761        0.6573        0.8649        0.6165       
+4800          78.0813       0.0003        0.8737        0.6791        0.8616        0.6316       
+5000          81.3347       0.0002        0.8750        0.6745        0.8616        0.6165       
+
+Test accuracy (best validation checkpoint):
+	mean:	[0.875]
+	worst:	[0.674]
+Group-wise accuracy:
+	[va] group-wise [0.991, 0.777, 0.617, 0.947]
+	[te] group-wise [0.995, 0.794, 0.674, 0.941]

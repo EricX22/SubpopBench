@@ -1,0 +1,88 @@
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/fixes.py:28: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version  # type: ignore
+Environment:
+	Python: 3.9.7
+	PyTorch: 2.8.0+cu128
+	Torchvision: 0.23.0+cu128
+	CUDA: 12.8
+	CUDNN: 91002
+	NumPy: 1.19.5
+	PIL: 11.3.0
+Args:
+	algorithm: GroupDRO
+	checkpoint_freq: None
+	cmnist_attr_prob: 0.5
+	cmnist_flip_prob: 0.25
+	cmnist_label_prob: 0.5
+	cmnist_spur_prob: 0.2
+	data_dir: /scratch/jrg4wx/subpop_bench/data
+	dataset: Waterbirds
+	es_metric: min_group:accuracy
+	es_patience: 5
+	es_strategy: metric
+	hparams: None
+	hparams_seed: 15
+	image_arch: resnet_sup_in1k
+	output_dir: ./output/wb_all_methods_16hp_3seed_attrNo_20260117_151131_attrNo/Waterbirds_GroupDRO_hparams15_seed0
+	output_folder_name: wb_all_methods_16hp_3seed_attrNo_20260117_151131_attrNo
+	pretrained: 
+	resume: 
+	seed: 0
+	skip_model_save: False
+	stage1_algo: ERM
+	stage1_folder: vanilla
+	steps: None
+	store_name: Waterbirds_GroupDRO_hparams15_seed0
+	tb_log_all: False
+	text_arch: bert-base-uncased
+	train_attr: no
+	use_es: False
+HParams:
+	batch_size: 73
+	group_balanced: False
+	groupdro_eta: 0.006343422637204517
+	image_arch: resnet_sup_in1k
+	last_layer_dropout: 0.0
+	lr: 0.006901984873198767
+	nonlinear_classifier: False
+	optimizer: sgd
+	pretrained: True
+	resnet18: False
+	text_arch: bert-base-uncased
+	weight_decay: 1.9172228632677565e-06
+Dataset:
+	[train]	4795 (without attributes)
+	[val]	1199
+	[test]	5794
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet50_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet50_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+
+
+step          epoch         loss          te_avg_acc    te_worst_acc  va_avg_acc    va_worst_acc 
+0             0.0000        0.6723        0.4833        0.1512        0.4937        0.1738       
+Traceback (most recent call last):
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/sfs/gpfs/tardis/home/jrg4wx/projects/Concept_Reweighting/SubpopBench/subpopbench/train.py", line 264, in <module>
+    curr_metrics = {split: eval_helper.eval_metrics(algorithm, loader, device, split_name=split)
+  File "/sfs/gpfs/tardis/home/jrg4wx/projects/Concept_Reweighting/SubpopBench/subpopbench/train.py", line 264, in <dictcomp>
+    curr_metrics = {split: eval_helper.eval_metrics(algorithm, loader, device, split_name=split)
+  File "/sfs/gpfs/tardis/home/jrg4wx/projects/Concept_Reweighting/SubpopBench/subpopbench/utils/eval_helper.py", line 50, in eval_metrics
+    **prob_metrics(targets, preds, label_set)
+  File "/sfs/gpfs/tardis/home/jrg4wx/projects/Concept_Reweighting/SubpopBench/subpopbench/utils/eval_helper.py", line 137, in prob_metrics
+    'AUROC_ovo': roc_auc_score(targets, preds, multi_class='ovo', labels=label_set),
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/validation.py", line 63, in inner_f
+    return f(*args, **kwargs)
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/metrics/_ranking.py", line 524, in roc_auc_score
+    y_score = check_array(y_score, ensure_2d=False)
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/validation.py", line 63, in inner_f
+    return f(*args, **kwargs)
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/validation.py", line 663, in check_array
+    _assert_all_finite(array,
+  File "/home/jrg4wx/anaconda3/envs/subpop_bench/lib/python3.9/site-packages/sklearn/utils/validation.py", line 103, in _assert_all_finite
+    raise ValueError(
+ValueError: Input contains NaN, infinity or a value too large for dtype('float32').

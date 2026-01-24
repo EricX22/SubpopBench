@@ -6,15 +6,24 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, roc_auc_score, av
 import netcal.metrics
 
 
-def predict_on_set(algorithm, loader, device):
-    num_labels = loader.dataset.num_labels
+def predict_on_set(algorithm, loader, device, split_name=None):
+    if hasattr(algorithm, "set_active_split"):
+        if split_name is None:
+            split_name = getattr(loader.dataset, "split", None)
+        if split_name is not None:
+            algorithm.set_active_split(split_name)
 
+    num_labels = loader.dataset.num_labels
     ys, atts, gs, ps = [], [], [], []
 
     algorithm.eval()
     with torch.no_grad():
-        for _, x, y, a in loader:
-            p = algorithm.predict(x.to(device))
+        for i, x, y, a in loader:
+            try:
+                p = algorithm.predict(x.to(device), i=i.to(device))
+            except TypeError:
+                p = algorithm.predict(x.to(device))
+
             if p.squeeze().ndim == 1:
                 p = torch.sigmoid(p).detach().cpu().numpy()
             else:
@@ -30,8 +39,8 @@ def predict_on_set(algorithm, loader, device):
     return np.concatenate(ys, axis=0), np.concatenate(atts, axis=0), np.concatenate(ps, axis=0), np.concatenate(gs)
 
 
-def eval_metrics(algorithm, loader, device, thres=0.5):
-    targets, attributes, preds, gs = predict_on_set(algorithm, loader, device)
+def eval_metrics(algorithm, loader, device, thres=0.5, split_name=None):
+    targets, attributes, preds, gs = predict_on_set(algorithm, loader, device, split_name=split_name)
     preds_rounded = preds >= thres if preds.squeeze().ndim == 1 else preds.argmax(1)
     label_set = np.unique(targets)
 
@@ -121,6 +130,9 @@ def binary_metrics(targets, preds, label_set=[0, 1], return_arrays=False):
 
 
 def prob_metrics(targets, preds, label_set, return_arrays=False):
+    preds = np.asarray(preds)
+    if not np.all(np.isfinite(preds)):
+        preds = np.nan_to_num(preds, nan=0.0, posinf=1.0, neginf=0.0)
     if len(targets) == 0:
         return {}
 

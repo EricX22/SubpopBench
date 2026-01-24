@@ -19,6 +19,7 @@ from subpopbench.dataset import datasets
 from subpopbench.learning import algorithms, early_stopping
 from subpopbench.utils import misc, eval_helper
 from subpopbench.dataset.fast_dataloader import InfiniteDataLoader, FastDataLoader
+from subpopbench.utils.cache_preflight import ensure_cr_caches
 
 
 if __name__ == "__main__":
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_folder_name', type=str, default='debug')
     parser.add_argument('--train_attr', type=str, default="yes", choices=['yes', 'no'])
     # others
-    parser.add_argument('--data_dir', type=str, default="./data")
+    parser.add_argument('--data_dir', type=str, default="/scratch/jrg4wx/subpop_bench/data")
     parser.add_argument('--output_dir', type=str, default="./output")
     parser.add_argument('--hparams', type=str, help='JSON-serialized hparams dict')
     parser.add_argument('--hparams_seed', type=int, default=0, help='Seed for random hparams (0 for "default hparams")')
@@ -132,11 +133,20 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError
 
-    if args.algorithm == 'DFR':
+    if args.algorithm == 'DFR' or args.algorithm == 'CR':
         train_dataset = vars(datasets)[args.dataset](
             args.data_dir, 'va', hparams, train_attr=args.train_attr, subsample_type='group')
+        if args.algorithm == "CR":
+            ensure_cr_caches(
+                dataset=args.dataset,
+                data_dir=args.data_dir,
+                repo_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+                hparams=hparams,
+                stage1_ckpt=getattr(args, "pretrained", None),
+            )
 
-    num_workers = train_dataset.N_WORKERS
+
+    num_workers = num_workers = min(train_dataset.N_WORKERS, 1)  # cap at 1
     input_shape = train_dataset.INPUT_SHAPE
     num_labels = train_dataset.num_labels
     num_attributes = train_dataset.num_attributes
@@ -182,16 +192,28 @@ if __name__ == "__main__":
     best_model_path = os.path.join(args.output_dir, 'model.best.pkl')
 
     # load stage1 model if using 2-stage algorithm
-    if 'CRT' in args.algorithm or 'DFR' in args.algorithm:
-        args.pretrained = os.path.join(
-            args.output_dir.replace(args.output_folder_name, args.stage1_folder), hparams['stage1_model']
-        ).replace(args.algorithm, args.stage1_algo)
-        args.pretrained = args.pretrained.replace(
-            f"seed{args.pretrained[args.pretrained.find('seed') + len('seed')]}", 'seed0')
-        assert os.path.isfile(args.pretrained)
+    if 'CRT' in args.algorithm or 'DFR' in args.algorithm or 'CR' in args.algorithm:
+        output_root = os.path.dirname(os.path.dirname(args.output_dir))
 
-    if args.pretrained:
-        checkpoint = torch.load(args.pretrained, map_location="cpu")
+        # IMPORTANT: stage1 should NOT follow stage2 hparams_seed during sweeps
+        stage1_hp_seed = int(hparams.get("stage1_hparams_seed", 0))   # default 0
+        stage1_seed = int(hparams.get("stage1_seed", 0))              # default 0
+
+        stage1_run = f"{args.dataset}_{args.stage1_algo}_hparams{stage1_hp_seed}_seed{stage1_seed}"
+
+        args.pretrained = os.path.join(
+            output_root,
+            args.stage1_folder,
+            stage1_run,
+            hparams['stage1_model']
+        )
+
+        assert os.path.isfile(args.pretrained), f"Stage1 checkpoint not found: {args.pretrained}"
+
+
+
+    if args.pretrained and args.text_arch is not None:
+        checkpoint = torch.load(args.pretrained, map_location="cpu", weights_only=False)
         from collections import OrderedDict
         new_state_dict = OrderedDict()
         for k, v in checkpoint['model_dict'].items():
@@ -204,7 +226,7 @@ if __name__ == "__main__":
     if args.resume:
         if os.path.isfile(args.resume):
             print(f"===> Loading checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, weights_only=False)
             start_step = checkpoint['start_step']
             args.best_val_acc = checkpoint['best_val_acc']
             algorithm.load_state_dict(checkpoint['model_dict'])
@@ -249,8 +271,8 @@ if __name__ == "__main__":
             for key, val in checkpoint_vals.items():
                 results[key] = np.mean(val)
 
-            curr_metrics = {split: eval_helper.eval_metrics(algorithm, loader, device)
-                            for split, loader in zip(split_names, eval_loaders)}            
+            curr_metrics = {split: eval_helper.eval_metrics(algorithm, loader, device, split_name=split)
+                    for split, loader in zip(split_names, eval_loaders)}  
             full_val_metrics = curr_metrics['va']
 
             for split in sorted(split_names):
@@ -274,7 +296,21 @@ if __name__ == "__main__":
 
             epochs_path = os.path.join(args.output_dir, 'results.json')
             with open(epochs_path, 'a') as f:
-                f.write(json.dumps(results, sort_keys=True) + "\n")
+                def _json_sanitize(o):
+                    if isinstance(o, (np.bool_,)):
+                        return bool(o)
+                    if isinstance(o, (np.integer,)):
+                        return int(o)
+                    if isinstance(o, (np.floating,)):
+                        return float(o)
+                    if isinstance(o, dict):
+                        return {str(k): _json_sanitize(v) for k, v in o.items()}
+                    if isinstance(o, (list, tuple)):
+                        return [_json_sanitize(x) for x in o]
+                    return o
+
+                f.write(json.dumps(_json_sanitize(results), sort_keys=True) + "\n")
+
 
             save_dict = {
                 "args": vars(args),
@@ -328,7 +364,7 @@ if __name__ == "__main__":
         num_workers=num_workers)
         for dset in [vars(datasets)[args.dataset](args.data_dir, split, hparams) for split in split_names]
     ]
-    final_results = {split: eval_helper.eval_metrics(algorithm, loader, device)
+    final_results = {split: eval_helper.eval_metrics(algorithm, loader, device, split_name=split)
                      for split, loader in zip(split_names, final_eval_loaders)}
     pickle.dump(final_results, open(os.path.join(args.output_dir, 'final_results.pkl'), 'wb'))
 

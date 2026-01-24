@@ -88,6 +88,71 @@ def _hparams(algorithm, dataset, random_seed):
     elif algorithm == 'DFR':
         _hparam('stage1_model', 'model.pkl', lambda r: 'model.pkl')
         _hparam('dfr_reg', .1, lambda r: 10**r.uniform(-2, 0.5))
+    
+    elif algorithm == 'CR':
+        _hparam('stage1_model', 'model.pkl', lambda r: 'model.pkl')
+
+        # --- Concept plumbing defaults (so sweep works out of the box) ---
+        _hparam('cr_use_concepts', True, lambda r: True)
+
+        _hparam('stage1_hparams_seed', 0, lambda r: 0)
+        _hparam('stage1_seed', 0, lambda r: 0)
+
+        # Dropout on the concatenated feature vector (helps prevent over-reliance)
+        _hparam('cr_feat_dropout', 0.5, lambda r: r.choice([0.0, 0.2, 0.5, 0.7]))
+
+        # Optional: block “obvious spurious” channels (env + imaging) vs no blocking
+        _hparam(
+            'cr_concept_block_channels',
+            ['environment_context', 'imaging_artifacts'],
+            lambda r: r.choice([
+                [],  # use everything
+                ['environment_context', 'imaging_artifacts'],  # block obvious spurious channels
+            ])
+        )
+
+        # Paths (set to your defaults; you can change these once and sweeps will inherit)
+        _hparam(
+            'cr_concept_meta_path',
+            'artifacts/concept_scores/waterbirds_binary_meta.json',
+            lambda r: 'artifacts/concept_scores/waterbirds_binary_meta.json'
+        )
+        _hparam(
+            'cr_concept_path_va',
+            'artifacts/concept_scores/waterbirds_binary_va.pt',
+            lambda r: 'artifacts/concept_scores/waterbirds_binary_va.pt'
+        )
+        _hparam(
+            'cr_concept_path_te',
+            'artifacts/concept_scores/waterbirds_binary_te.pt',
+            lambda r: 'artifacts/concept_scores/waterbirds_binary_te.pt'
+        )
+
+        # --- Regularization: your current default (.1) is *way* too big here ---
+        # Sweep smaller values; this is L1 on a linear layer, so even 1e-3 can be strong.
+        _hparam('cr_reg', 0.0, lambda r: 10**r.uniform(-6, -3))
+
+        _hparam('cr_use_resid', True, lambda r: True)
+        _hparam('cr_resid_dim', 64, lambda r: 64)
+
+        _hparam('cr_resid_path_va',
+                'artifacts/resid_cache/wb_resid_va_pca64.pt',
+                lambda r: 'artifacts/resid_cache/wb_resid_va_pca64.pt')
+        _hparam('cr_resid_path_te',
+                'artifacts/resid_cache/wb_resid_te_pca64.pt',
+                lambda r: 'artifacts/resid_cache/wb_resid_te_pca64.pt')
+
+        _hparam('cr_feature_mode', 'concat_plus_resid', lambda r: 'concat_plus_resid')
+
+        _hparam('cr_concept_dropout', 0.0, lambda r: r.choice([0.0, 0.1, 0.2]))
+        _hparam('cr_resid_dropout', 0.0, lambda r: r.choice([0.0, 0.1, 0.2]))
+
+        _hparam('cr_block_gates', False, lambda r: r.choice([False, True]))
+        _hparam('cr_gate_init', 0.0, lambda r: 0.0)
+        _hparam('cr_gate_reg', 0.0, lambda r: 10**r.uniform(-6, -3))  # mild
+
+
+
 
     # Dataset-and-algorithm-specific hparam definitions
     # Each block of code below corresponds to exactly one hparam. Avoid nested conditionals

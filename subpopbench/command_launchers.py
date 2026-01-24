@@ -4,6 +4,9 @@ import torch
 import sys
 import getpass
 from pathlib import Path
+import os
+import shlex
+
 
 
 def local_launcher(commands):
@@ -45,18 +48,37 @@ def multi_gpu_launcher(commands):
 
 
 def slurm_launcher(commands, output_dirs, max_slurm_jobs=12):
+    sbatch_opts = os.environ.get("SBATCH_OPTS", "").strip()
+
     for output_dir, cmd in zip(output_dirs, commands):
         block_until_running(max_slurm_jobs, getpass.getuser())
-        out_str = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode(sys.stdout.encoding)
-        print(out_str.strip())
-        if output_dir:
-            try:
-                job_id = int(out_str.split(' ')[-1])
-            except (IndexError, ValueError, AttributeError):
-                print("Error in Slurm submission, exiting.")
-                sys.exit(0)
 
-            (Path(output_dir)/'job_id').write_text(str(job_id))
+        # Make sure cmd runs in the repo root if desired (optional)
+        # cmd = f"cd {shlex.quote(os.getcwd())} && {cmd}"
+
+        wrapped = f"sbatch {sbatch_opts} --wrap={shlex.quote(cmd)}"
+        p = subprocess.run(
+            wrapped, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True
+        )
+        out_str = (p.stdout or "").strip()
+        print(out_str)
+
+        # sbatch prints "Submitted batch job <id>"
+        toks = out_str.split()
+        if len(toks) >= 4 and toks[-1].isdigit() and "Submitted" in toks[0]:
+            job_id = int(toks[-1])
+        else:
+            print("ERROR: sbatch did not return a job id. Command was:", wrapped, file=sys.stderr)
+            print("----- sbatch output begin -----", file=sys.stderr)
+            print(out_str, file=sys.stderr)
+            print("----- sbatch output end -----", file=sys.stderr)
+            sys.exit(1)
+
+        if output_dir:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            (Path(output_dir) / "job_id").write_text(str(job_id))
 
 
 def get_slurm_jobs(user):

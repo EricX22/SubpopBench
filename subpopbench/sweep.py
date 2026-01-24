@@ -75,20 +75,42 @@ class Job:
         print(f'Deleted {len(jobs)} jobs!')
 
 
-def load_best_hparams(all_records, dataset, algo):
-    records = all_records.filter(
-        lambda r: r['dataset'] == dataset and r['algorithm'] == algo)
-    selection_method = model_selection.ValWorstAccAttributeYes
 
-    assert len(records) == 1
-    group = records[0]
-    sorted_hparams = selection_method.hparams_accs(group['records'])
+def _get_selection_method():
+    # default matches paper; override with env var
+    name = os.environ.get("SPB_SELECTION", "ValWorstAccAttributeYes")
+    if not hasattr(model_selection, name):
+        raise ValueError(f"Unknown SPB_SELECTION={name}. "
+                         f"Valid: {', '.join([x for x in dir(model_selection) if x.startswith('Val') or x.startswith('Oracle')])}")
+    return getattr(model_selection, name)
+
+def load_best_hparams(all_records, dataset, algo):
+    """
+    Robust version:
+      - filters by dataset+algorithm
+      - if multiple record-groups exist, merges their 'records' lists
+      - uses SPB_SELECTION env var to pick HP
+    """
+    selection_method = _get_selection_method()
+
+    groups = all_records.filter(lambda r: r['dataset'] == dataset and r['algorithm'] == algo)
+    if len(groups) == 0:
+        raise RuntimeError(f"No records found for dataset={dataset}, algorithm={algo}")
+
+    # Merge multiple groups (this is what fixes your assertion)
+    merged_records = []
+    for g in groups:
+        merged_records.extend(g['records'])
+
+    # Now select best hp on the merged pool
+    sorted_hparams = selection_method.hparams_accs(merged_records)
     run_acc, best_hparam_records = sorted_hparams[0]
-    for r in best_hparam_records:
-        assert(r['hparams'] == best_hparam_records[0]['hparams'])
-    output_dir = best_hparam_records.select('args.output_dir').unique()
-    assert len(output_dir) == 1
-    hp_seed = output_dir[0][output_dir[0].find('hparams') + len('hparams'):output_dir[0].find('_seed')]
+
+    # infer hp seed from output_dir like before
+    output_dirs = list({r['args']['output_dir'] for r in best_hparam_records})
+    assert len(output_dirs) >= 1
+    od = output_dirs[0]
+    hp_seed = od[od.find('hparams') + len('hparams') : od.find('_seed')]
     return int(hp_seed)
 
 

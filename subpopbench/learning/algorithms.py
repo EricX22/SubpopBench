@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import torch.autograd as autograd
 import numpy as np
 from transformers import get_scheduler
+import json
+
 
 from subpopbench.models import networks
 from subpopbench.learning import joint_dro
@@ -21,6 +23,7 @@ ALGORITHMS = [
     'LfF',
     'LISA',
     'DFR',
+    'CR',
     # data augmentation
     'Mixup',
     # domain generalization methods
@@ -450,6 +453,431 @@ class DFR(ERM):
 
     def _compute_loss(self, i, x, y, a, step):
         return self.loss(self.predict(x), y).mean() + self.hparams['dfr_reg'] * torch.norm(self.classifier.weight, 1)
+
+
+
+class CR(ERM):
+    """
+    DFR-style classifier re-training on held-out (validation) data with L1 regularization,
+    extended to optionally concatenate cached CLIP concept features.
+    """
+    def __init__(self, data_type, input_shape, num_classes, num_attributes,
+                num_examples, hparams, grp_sizes=None):
+        super(CR, self).__init__(
+            data_type, input_shape, num_classes,
+            num_attributes, num_examples, hparams, grp_sizes
+        )
+
+        # ------------------------------------------------------------
+        # (A) Freeze stage-1 featurizer (DFR behavior)
+        # ------------------------------------------------------------
+        for _, param in self.featurizer.named_parameters():
+            param.requires_grad = False
+
+        # ------------------------------------------------------------
+        # (B) Concept flags
+        # ------------------------------------------------------------
+        self.use_concepts = bool(self.hparams.get("cr_use_concepts", False))
+        self.concept_dim = int(self.hparams.get("cr_concept_dim", 0))
+
+        self._concept_cache_by_split = {}
+        self._concept_use_mask = None
+        self._concept_channel = None
+        self._concept_text = None
+        self.concept_dim_used = 0
+
+        # ------------------------------------------------------------
+        # (B2) Residual flags
+        # ------------------------------------------------------------
+        self.use_resid = bool(self.hparams.get("cr_use_resid", False))
+        self.resid_dim = int(self.hparams.get("cr_resid_dim", 0))
+        self._resid_cache_by_split = {}
+
+        if self.use_resid:
+            for split_key in ["va", "te", "tr"]:
+                p = self.hparams.get(f"cr_resid_path_{split_key}", None)
+                if p is not None:
+                    cache = torch.load(p, map_location="cpu")
+                    if isinstance(cache, dict) and "resid" in cache:
+                        cache = cache["resid"]
+                    assert torch.is_tensor(cache) and cache.dim() == 2
+                    self._resid_cache_by_split[split_key] = cache.contiguous()
+
+            if not self._resid_cache_by_split:
+                p = self.hparams.get("cr_resid_path", None)
+                assert p is not None, "cr_use_resid=True requires cr_resid_path or cr_resid_path_<split>"
+                cache = torch.load(p, map_location="cpu")
+                if isinstance(cache, dict) and "resid" in cache:
+                    cache = cache["resid"]
+                assert torch.is_tensor(cache) and cache.dim() == 2
+                self._resid_cache_by_split["va"] = cache.contiguous()
+
+            any_r = next(iter(self._resid_cache_by_split.values()))
+            cache_R = int(any_r.shape[1])
+            if self.resid_dim <= 0:
+                self.resid_dim = cache_R
+            else:
+                assert self.resid_dim == cache_R, f"cr_resid_dim={self.resid_dim} but cache has R={cache_R}"
+
+        # -----------------------------
+        # (B3) Dropout knobs per block
+        # -----------------------------
+        self.cr_concept_dropout = float(self.hparams.get("cr_concept_dropout", 0.0))
+        self.cr_resid_dropout = float(self.hparams.get("cr_resid_dropout", 0.0))
+
+        # -----------------------------
+        # (B4) Simple block-level gates
+        # -----------------------------
+        self.cr_block_gates = bool(self.hparams.get("cr_block_gates", False))
+        if self.cr_block_gates:
+            # gates are scalars in (0,1); start at ~1.0 (logit ~ +4.6) or ~0.5 (0.0)
+            init = float(self.hparams.get("cr_gate_init", 0.0))  # 0.0 => sigmoid=0.5
+            self.gate_alpha_logit = torch.nn.Parameter(torch.tensor(init))  # for concepts
+            self.gate_beta_logit  = torch.nn.Parameter(torch.tensor(init))  # for residuals
+
+        # ------------------------------------------------------------
+        # (C) Load concept caches (split-aware)
+        # ------------------------------------------------------------
+        if self.use_concepts:
+            for split_key in ["va", "te", "tr"]:
+                p = self.hparams.get(f"cr_concept_path_{split_key}", None)
+                if p is not None:
+                    cache = torch.load(p, map_location="cpu")
+                    if isinstance(cache, dict) and "concepts" in cache:
+                        cache = cache["concepts"]
+                    assert torch.is_tensor(cache) and cache.dim() == 2
+                    self._concept_cache_by_split[split_key] = cache.contiguous()
+
+            # fallback: single cache
+            if not self._concept_cache_by_split:
+                p = self.hparams.get("cr_concept_path", None)
+                assert p is not None, (
+                    "cr_use_concepts=True requires cr_concept_path "
+                    "or cr_concept_path_<split>"
+                )
+                cache = torch.load(p, map_location="cpu")
+                if isinstance(cache, dict) and "concepts" in cache:
+                    cache = cache["concepts"]
+                assert torch.is_tensor(cache) and cache.dim() == 2
+                self._concept_cache_by_split["va"] = cache.contiguous()
+
+            # --------------------------------------------------------
+            # (D) Infer concept_dim from cache (SOURCE OF TRUTH)
+            # --------------------------------------------------------
+            any_cache = next(iter(self._concept_cache_by_split.values()))
+            cache_K = int(any_cache.shape[1])
+
+            if self.concept_dim <= 0:
+                self.concept_dim = cache_K
+            else:
+                assert self.concept_dim == cache_K, (
+                    f"cr_concept_dim={self.concept_dim} "
+                    f"but cache has K={cache_K}"
+                )
+
+            # --------------------------------------------------------
+            # (E) Load meta + build use mask
+            # --------------------------------------------------------
+            meta_path = self.hparams.get("cr_concept_meta_path", None)
+            assert meta_path is not None, (
+                "cr_use_concepts=True requires cr_concept_meta_path"
+            )
+
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+
+            block = set(self.hparams.get("cr_concept_block_channels", []))
+
+            channel = meta.get("channel", None)
+            if channel is None:
+                channel_mask = torch.ones(self.concept_dim, dtype=torch.bool)
+            else:
+                channel_mask = torch.tensor([c not in block for c in channel], dtype=torch.bool)
+
+            use_mask = meta.get("use_in_training", None)
+            if use_mask is None:
+                use_mask = torch.ones(self.concept_dim, dtype=torch.bool)
+            else:
+                use_mask = torch.as_tensor(use_mask, dtype=torch.bool)
+
+            self._concept_use_mask = use_mask & channel_mask
+            self.concept_dim_used = int(self._concept_use_mask.sum().item())
+
+
+            # --------------------------------------------------------
+            # (F) Active split (default = va, like DFR stage2)
+            # --------------------------------------------------------
+            self._active_split = self.hparams.get("cr_active_split", "va")
+
+        # ------------------------------------------------------------
+        # (G) Classifier (DFR-style: classifier only)
+        # ------------------------------------------------------------
+        # Force concept usage (big step)
+        self.cr_concept_only = bool(self.hparams.get("cr_concept_only", False))
+        if self.cr_concept_only:
+            assert self.use_concepts, "cr_concept_only requires cr_use_concepts=True"
+
+        mode = self.hparams.get("cr_feature_mode", "concat")
+        in_dim = self.featurizer.n_outputs
+
+        if self.use_concepts and mode in ["concat", "concat_plus_resid", "concept_only", "resid_plus_concept"]:
+            # concept_only handled below
+            pass
+
+        if self.use_concepts and mode in ["concat", "concat_plus_resid", "resid_plus_concept"]:
+            in_dim += self.concept_dim_used
+
+        if self.use_resid and mode in ["concat_plus_resid", "resid_only", "resid_plus_concept"]:
+            in_dim += self.resid_dim
+
+        if self.use_concepts and mode == "concept_only":
+            in_dim = self.concept_dim_used
+        if self.use_resid and mode == "resid_only":
+            in_dim = self.resid_dim
+        if mode == "resid_plus_concept":
+            in_dim = (self.concept_dim_used if self.use_concepts else 0) + (self.resid_dim if self.use_resid else 0)
+
+        self.classifier = networks.Classifier(in_dim, num_classes, self.hparams["nonlinear_classifier"])
+
+        self._index_map_by_split = {}
+
+
+        # ------------------------------------------------------------
+        # (H) Optimizer: classifier only (exact DFR behavior)
+        # ------------------------------------------------------------
+        params = list(self.classifier.parameters())
+        if self.cr_block_gates:
+            params += [self.gate_alpha_logit, self.gate_beta_logit]
+
+        if self.data_type in ["images", "tabular"]:
+            self.optimizer = torch.optim.SGD(
+                params,
+                lr=self.hparams["lr"],
+                weight_decay=0.0,
+                momentum=self.hparams.get("momentum", 0.9),
+                nesterov=self.hparams.get("nesterov", False),
+            )
+            self.lr_scheduler = None
+        elif self.data_type == "text":
+            self.classifier.zero_grad()
+            self.optimizer = get_optimizers[self.hparams["optimizer"]](
+                self.classifier, self.hparams["lr"], 0.0
+            )
+            self.lr_scheduler = get_scheduler(
+                "linear",
+                optimizer=self.optimizer,
+                num_warmup_steps=0,
+                num_training_steps=self.hparams["steps"],
+            )
+        else:
+            raise NotImplementedError(f"{self.data_type} not supported.")
+
+
+    def _maybe_remap_idx(self, idx_cpu: torch.Tensor) -> torch.Tensor:
+        """
+        Remap global dataset indices -> split-local indices if a mapping exists
+        for the active split. Otherwise, return idx as-is.
+        """
+        m = getattr(self, "_index_map_by_split", {}).get(self._active_split, None)
+        if m is None:
+            return idx_cpu
+
+        # Option A: tensor map where m[global_idx] = local_idx, and -1 for not-in-split
+        if torch.is_tensor(m):
+            local = m.index_select(0, idx_cpu)
+            if (local < 0).any():
+                bad = idx_cpu[local < 0][:10].tolist()
+                raise IndexError(
+                    f"[CR] Found indices not present in split={self._active_split}: "
+                    f"examples={bad}. Check dataloader / split mapping."
+                )
+            return local.long()
+
+        # Option B: dict mapping
+        if isinstance(m, dict):
+            # this is slower but ok for debugging; consider tensor map for speed
+            local_list = []
+            for g in idx_cpu.tolist():
+                if g not in m:
+                    raise IndexError(f"[CR] idx {g} not in split={self._active_split}")
+                local_list.append(m[g])
+            return torch.tensor(local_list, dtype=torch.long)
+
+        raise TypeError(f"[CR] Unknown index map type for split={self._active_split}: {type(m)}")
+
+        
+    def set_active_split(self, split: str):
+        self._active_split = split
+
+    def _get_concepts(self, i, device):
+        """
+        i: tensor of dataset indices shape [B]
+        returns concept tensor shape [B, K] on `device`
+        """
+        # ensure i is on CPU for indexing
+        idx = i.detach().to("cpu").long()
+        idx = self._maybe_remap_idx(idx)
+
+        cache = self._concept_cache_by_split.get(self._active_split, None)
+        if cache is None:
+            raise KeyError(
+                f"No concept cache for active split={self._active_split}. "
+                f"Available splits={list(self._concept_cache_by_split.keys())}"
+            )
+
+
+        if int(idx.max()) >= cache.shape[0]:
+            self._raise_cache_oob("Concept", self._active_split, idx, cache.shape[0])
+
+        c = cache.index_select(0, idx)
+
+        if self._concept_use_mask is not None:
+            c = c[:, self._concept_use_mask]          # [B, K_used]
+        return c.to(device=device, dtype=torch.float32)
+
+    def _get_resid(self, i, device):
+        idx = i.detach().to("cpu").long()
+        idx = self._maybe_remap_idx(idx)
+        cache = self._resid_cache_by_split.get(self._active_split, None)
+        if cache is None:
+            raise KeyError(
+                f"No resid cache for active split={self._active_split}. "
+                f"Available splits={list(self._resid_cache_by_split.keys())}"
+            )
+        if int(idx.max()) >= cache.shape[0]:
+            raise IndexError(
+                f"Resid cache too small for split={self._active_split}: "
+                f"max idx={int(idx.max())} but cache rows={cache.shape[0]}"
+            )
+        r = cache.index_select(0, idx)
+        return r.to(device=device, dtype=torch.float32)
+
+
+    def _raise_cache_oob(self, kind: str, split: str, idx: torch.Tensor, cache_rows: int):
+        idx_min = int(idx.min()) if idx.numel() else -1
+        idx_max = int(idx.max()) if idx.numel() else -1
+        raise IndexError(
+            f"{kind} cache too small for split={split}: idx range=[{idx_min},{idx_max}], "
+            f"cache rows={cache_rows}. "
+            f"Likely indexing mismatch (global dataset indices vs split-local cache), "
+            f"or wrong dataset cache loaded."
+        )
+
+
+    def return_feats(self, x):
+        # base features only (kept for compatibility with eval code)
+        return self.featurizer(x)
+
+    def predict(self, x, i=None):
+        f = self.featurizer(x)
+        p = float(self.hparams.get("cr_feat_dropout", 0.0))
+        if p > 0:
+            f = torch.nn.functional.dropout(f, p=p, training=self.training)
+
+
+        if not self.use_concepts:
+            return self.classifier(f)
+
+        assert i is not None, "CR with concepts requires dataset indices i"
+        c = self._get_concepts(i, x.device)
+
+        # ensure dtype matches classifier weights
+        c = c.to(dtype=f.dtype)
+
+        # optional scale
+        scale = float(self.hparams.get("cr_concept_scale", 1.0))
+        c = c * scale
+
+
+        r = None
+        if self.use_resid:
+            assert i is not None, "CR with resid requires dataset indices i"
+            r = self._get_resid(i, x.device).to(dtype=f.dtype)
+        # Dropout on auxiliary blocks (concepts/residuals)
+        if self.use_concepts and self.cr_concept_dropout > 0:
+            c = torch.nn.functional.dropout(c, p=self.cr_concept_dropout, training=self.training)
+        if self.use_resid and self.cr_resid_dropout > 0:
+            r = torch.nn.functional.dropout(r, p=self.cr_resid_dropout, training=self.training)
+
+        # Block-level gates (scalars)
+        if getattr(self, "cr_block_gates", False):
+            if self.use_concepts:
+                alpha = torch.sigmoid(self.gate_alpha_logit).to(dtype=c.dtype, device=c.device)
+                c = c * alpha
+            if self.use_resid:
+                beta = torch.sigmoid(self.gate_beta_logit).to(dtype=r.dtype, device=r.device)
+                r = r * beta
+
+
+        mode = self.hparams.get("cr_feature_mode", "concat")
+
+        if mode == "concat":
+            z = torch.cat([f, c], dim=1) if self.use_concepts else f
+            return self.classifier(z)
+
+        elif mode == "concat_plus_resid":
+            parts = [f]
+            if self.use_concepts:
+                parts.append(c)
+            if self.use_resid:
+                parts.append(r)
+            z = torch.cat(parts, dim=1)
+            return self.classifier(z)
+
+        elif mode == "concept_only":
+            return self.classifier(c)
+
+        elif mode == "resid_only":
+            return self.classifier(r)
+
+        elif mode == "resid_plus_concept":
+            parts = []
+            if self.use_concepts:
+                parts.append(c)
+            if self.use_resid:
+                parts.append(r)
+            z = torch.cat(parts, dim=1)
+            return self.classifier(z)
+
+        else:
+            raise ValueError(f"Unknown cr_feature_mode={mode}")
+
+    def _compute_loss(self, i, x, y, a, step):
+        logits = self.predict(x, i=i)
+        ce = self.loss(logits, y).mean()
+        reg = self.hparams.get('cr_reg', 0.0) * torch.norm(self.classifier.weight, 1)
+        gate_reg = 0.0
+        gate_reg = 0.0
+        if getattr(self, "cr_block_gates", False):
+            lam = float(self.hparams.get("cr_gate_reg", 0.0))
+            terms = []
+            if self.use_concepts:
+                alpha = torch.sigmoid(self.gate_alpha_logit)
+                terms.append(alpha.abs())
+            if self.use_resid:
+                beta = torch.sigmoid(self.gate_beta_logit)
+                terms.append(beta.abs())
+            if terms:
+                gate_reg = lam * sum(terms)
+
+
+        return ce + reg + gate_reg
+
+    def update(self, minibatch, step):
+        all_i, all_x, all_y, all_a = minibatch
+        loss = self._compute_loss(all_i, all_x, all_y, all_a, step)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        if getattr(self, "clip_grad", False):
+            torch.nn.utils.clip_grad_norm_(self.classifier.parameters(), 1.0)
+        self.optimizer.step()
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+
+        return {'loss': loss.item()}
+
 
 
 class IRM(ERM):
