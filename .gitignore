@@ -39,6 +39,14 @@ output/
 *.tfevents.*
 *.out
 *.err
+*.jpg
+# datasets / large blobs
+track_2/
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.zip
+
 
 # scratch data
 data/
