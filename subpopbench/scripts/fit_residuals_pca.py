@@ -5,19 +5,29 @@ import torch
 
 def ridge_fit(C: torch.Tensor, F: torch.Tensor, lam: float) -> torch.Tensor:
     """
-    Fit W in F ≈ C @ W, with ridge lam:
-      W = (C^T C + lam I)^(-1) C^T F
-    Shapes:
-      C: [N, K], F: [N, d], W: [K, d]
+    Solve W = argmin ||F - C W||^2 + lam ||W||^2.
+
+    This preserves the math (same lam), but is more numerically stable:
+      - compute in float64 on CPU
+      - solve SPD system with Cholesky
     """
-    C = C.float()
-    F = F.float()
+    if lam <= 0:
+        raise ValueError(f"ridge_lam must be > 0 for a well-posed ridge system, got {lam}")
+
+    # Move to CPU float64 for stable linear algebra
+    C = C.detach().to(device="cpu", dtype=torch.float64)
+    F = F.detach().to(device="cpu", dtype=torch.float64)
+
     K = C.shape[1]
-    CtC = C.T @ C
-    A = CtC + lam * torch.eye(K, device=C.device, dtype=C.dtype)
+    A = C.T @ C + float(lam) * torch.eye(K, dtype=torch.float64)
     B = C.T @ F
-    W = torch.linalg.solve(A, B)
-    return W
+
+    # Cholesky-based solve (same solution as solve(A,B), but stable)
+    L = torch.linalg.cholesky(A)
+    W = torch.cholesky_solve(B, L)
+
+    return W.to(dtype=torch.float32)
+
 
 def pca_fit_transform(X: torch.Tensor, k: int):
     """

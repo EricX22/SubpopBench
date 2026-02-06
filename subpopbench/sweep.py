@@ -20,7 +20,7 @@ class Job:
     def __init__(self, train_args, slurm_pre=None):
         self.output_dir = os.path.join(
             args.output_dir,
-            f"{args.output_folder_name}{'_attrYes' if args.train_attr == 'yes' else '_attrNo'}",
+            # {args.output_folder_name}{'_attrYes' if args.train_attr == 'yes' else '_attrNo'}",
             f"{train_args['dataset']}_{train_args['algorithm']}"
             f"_hparams{train_args['hparams_seed']}_seed{train_args['seed']}"
         )

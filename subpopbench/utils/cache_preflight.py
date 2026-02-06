@@ -2,7 +2,9 @@ import os
 import time
 import subprocess
 from pathlib import Path
+from typing import Optional
 from contextlib import contextmanager
+import json
 
 @contextmanager
 def file_lock(lock_path: Path, poll_s: float = 2.0):
@@ -33,7 +35,7 @@ def ensure_cr_caches(
     data_dir: str,
     repo_dir: str,
     hparams: dict,
-    stage1_ckpt: str | None = None,
+    stage1_ckpt: Optional[str] = None,
 ):
     """
     Auto-create concept caches and residual caches needed by CR if missing.
@@ -51,6 +53,30 @@ def ensure_cr_caches(
     use_resid = bool(hparams.get("cr_use_resid", False))
     if not (use_concepts or use_resid):
         return
+
+    # NEW: if user provided explicit cache paths, don't rebuild
+    if use_concepts:
+        has_concept_paths = all([
+            hparams.get("cr_concept_meta_path"),
+            hparams.get("cr_concept_path_tr"),
+            hparams.get("cr_concept_path_va"),
+            hparams.get("cr_concept_path_te"),
+        ])
+    else:
+        has_concept_paths = True
+
+    if use_resid:
+        has_resid_paths = all([
+            hparams.get("cr_resid_path_va"),
+            hparams.get("cr_resid_path_te"),
+        ])
+    else:
+        has_resid_paths = True
+
+    # If everything needed is explicitly provided, trust it and exit.
+    if has_concept_paths and has_resid_paths:
+        return
+
 
     repo_dir = str(repo_dir)
     artifacts = Path(repo_dir) / "artifacts"
@@ -81,7 +107,7 @@ def ensure_cr_caches(
     for d in [concepts_dir, scores_dir, feat_dir, resid_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    bank_path = concepts_dir / f"{task_id}.json"
+    bank_path = concepts_dir / f"{task_id}_bank.json"
     meta_path = scores_dir / f"{task_id}_meta.json"
     tr_concept = scores_dir / f"{task_id}_tr.pt"
     va_concept = scores_dir / f"{task_id}_va.pt"
@@ -102,7 +128,7 @@ def ensure_cr_caches(
         # ------------------------------------------------------------
         # (1) Concept bank JSON (if missing)
         # ------------------------------------------------------------
-        if use_concepts and not bank_path.exists():
+        if use_concepts or use_resid and not bank_path.exists():
             modality = hparams.get("cr_modality", None)
             labels_json = hparams.get("cr_labels_json", None)
             if modality is None or labels_json is None:
@@ -110,12 +136,15 @@ def ensure_cr_caches(
                     f"[preflight] Missing cr_modality / cr_labels_json needed to generate concept bank for task_id={task_id}. "
                     f"(For waterbirds_binary you can set these once in hparams_registry.)"
                 )
+
+            labels_arg = labels_json if isinstance(labels_json, str) else json.dumps(labels_json)
+
             _run(
                 [
                     "python", "-m", "subpopbench.scripts.generate_concept_bank",
                     "--task-id", task_id,
                     "--modality", modality,
-                    "--labels", labels_json,
+                    "--labels", labels_arg,
                     "--out", str(bank_path),
                 ],
                 cwd=repo_dir,
@@ -124,7 +153,7 @@ def ensure_cr_caches(
         # ------------------------------------------------------------
         # (2) Compile meta JSON (if missing)
         # ------------------------------------------------------------
-        if use_concepts and not meta_path.exists():
+        if use_concepts or use_resid and not meta_path.exists():
             _run(
                 [
                     "python", "-m", "subpopbench.scripts.compile_concept_meta",
@@ -137,7 +166,7 @@ def ensure_cr_caches(
         # ------------------------------------------------------------
         # (3) Cache CLIP concept probs for splits (if missing)
         # ------------------------------------------------------------
-        if use_concepts:
+        if use_concepts or use_resid:
             for split, outp in [("tr", tr_concept), ("va", va_concept), ("te", te_concept)]:
                 if not outp.exists():
                     _run(
@@ -154,7 +183,7 @@ def ensure_cr_caches(
                     )
 
         # Wire hparams to the files we just ensured
-        if use_concepts:
+        if use_concepts or use_resid:
             hparams["cr_concept_meta_path"] = str(meta_path)
             hparams["cr_concept_path_tr"] = str(tr_concept)
             hparams["cr_concept_path_va"] = str(va_concept)

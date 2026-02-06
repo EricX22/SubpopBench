@@ -6,6 +6,34 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, roc_auc_score, av
 import netcal.metrics
 
 
+def _to_pos_prob(p: np.ndarray) -> np.ndarray:
+    """
+    Convert model outputs into a 1D array of P(y=1) for binary classification.
+    Handles:
+      - (N,2) probs/logits
+      - (N,) or (N,1) single logit or single prob
+    """
+    p = np.asarray(p)
+
+    # If model returns (N,1), squeeze to (N,)
+    if p.ndim == 2 and p.shape[1] == 1:
+        p = p[:, 0]
+
+    # Case A: already 2D with two columns
+    if p.ndim == 2 and p.shape[1] == 2:
+        return p[:, 1]
+
+    # Case B: 1D output => either prob in [0,1] or logit
+    if p.ndim == 1:
+        # Heuristic: if all values are in [0,1], treat as probability.
+        # Otherwise treat as logit and sigmoid it.
+        finite = p[np.isfinite(p)]
+        if finite.size > 0 and finite.min() >= 0.0 and finite.max() <= 1.0:
+            return p
+        return 1.0 / (1.0 + np.exp(-p))
+
+    raise ValueError(f"Unexpected prediction shape for binary task: {p.shape}")
+
 def predict_on_set(algorithm, loader, device, split_name=None):
     if hasattr(algorithm, "set_active_split"):
         if split_name is None:
@@ -29,7 +57,8 @@ def predict_on_set(algorithm, loader, device, split_name=None):
             else:
                 p = torch.softmax(p, dim=-1).detach().cpu().numpy()
                 if num_labels == 2:
-                    p = p[:, 1]
+                    p = _to_pos_prob(p)
+
 
             ps.append(p)
             ys.append(y)

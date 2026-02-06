@@ -111,7 +111,7 @@ def main():
     assert max_i >= 0, "Empty loader? (No samples yielded.)"
 
     scores_dtype = torch.float16 if args.fp16 else torch.float32
-    scores = torch.empty((max_i + 1, K), dtype=scores_dtype)
+    scores = torch.empty((max_i + 1, K), dtype=torch.float32)
     scores.zero_()  # deterministic for any unused rows
 
     # Load OpenCLIP
@@ -139,7 +139,8 @@ def main():
                 x = x.half()
             img_feats = encode_image_features(model, x, device=device)    # [B, D]
             logits = (scale * img_feats @ text_feats.T)                  # [B, K]
-            probs = torch.sigmoid(logits).detach().cpu()                 # [B, K]
+            logits = logits.detach().cpu().float()        # [B, K]  (force fp32)
+
 
             idx = i.long().cpu()
             if int(idx.max()) >= scores.shape[0]:
@@ -147,12 +148,12 @@ def main():
                     f"Internal error: idx.max()={int(idx.max())} >= scores rows={scores.shape[0]}"
                 )
 
-            scores.index_copy_(0, idx, probs.to(scores.dtype))
+            scores.index_copy_(0, idx, logits)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
     save_obj: Dict[str, Any] = {
-        "concepts": scores,  # [max_i+1, K]
+        "concept_logits": scores,  # [max_i+1, K]
         "meta_path": args.meta,
         "dataset": args.dataset,
         "split": args.split,

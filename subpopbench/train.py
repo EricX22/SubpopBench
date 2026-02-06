@@ -28,7 +28,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default="Waterbirds", choices=datasets.DATASETS)
     parser.add_argument('--algorithm', type=str, default="ERM", choices=algorithms.ALGORITHMS)
     parser.add_argument('--output_folder_name', type=str, default='debug')
-    parser.add_argument('--train_attr', type=str, default="yes", choices=['yes', 'no'])
+    parser.add_argument('--train_attr', type=str, default="no", choices=['yes', 'no'])
     # others
     parser.add_argument('--data_dir', type=str, default="/scratch/jrg4wx/subpop_bench/data")
     parser.add_argument('--output_dir', type=str, default="./output")
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     store_prefix = f"{args.dataset}_{args.cmnist_label_prob}_{args.cmnist_attr_prob}_{args.cmnist_spur_prob}" \
                    f"_{args.cmnist_flip_prob}" if args.dataset == "CMNIST" else args.dataset
     args.store_name = f"{store_prefix}_{args.algorithm}_hparams{args.hparams_seed}_seed{args.seed}"
-    args.output_folder_name += "_attrYes" if args.train_attr == 'yes' else "_attrNo"
+    #args.output_folder_name += "_attrYes" if args.train_attr == 'yes' else "_attrNo"
 
     misc.prepare_folders(args)
     args.output_dir = os.path.join(args.output_dir, args.output_folder_name, args.store_name)
@@ -136,14 +136,6 @@ if __name__ == "__main__":
     if args.algorithm == 'DFR' or args.algorithm == 'CR':
         train_dataset = vars(datasets)[args.dataset](
             args.data_dir, 'va', hparams, train_attr=args.train_attr, subsample_type='group')
-        if args.algorithm == "CR":
-            ensure_cr_caches(
-                dataset=args.dataset,
-                data_dir=args.data_dir,
-                repo_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
-                hparams=hparams,
-                stage1_ckpt=getattr(args, "pretrained", None),
-            )
 
 
     num_workers = num_workers = min(train_dataset.N_WORKERS, 1)  # cap at 1
@@ -209,6 +201,15 @@ if __name__ == "__main__":
         )
 
         assert os.path.isfile(args.pretrained), f"Stage1 checkpoint not found: {args.pretrained}"
+        # CR cache preflight must run AFTER args.pretrained is resolved
+        if args.algorithm == "CR":
+            ensure_cr_caches(
+                dataset=args.dataset,
+                data_dir=args.data_dir,
+                repo_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+                hparams=hparams,
+                stage1_ckpt=args.pretrained,
+            )
 
 
 
